@@ -1,0 +1,956 @@
+---
+title: "script_propre"
+author: "nilsm"
+date: "2025-07-29"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+setwd("C:/Users/nilsm/Documents/data_energies/uranium")
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(rsconnect)
+library(shiny)
+library(ggiraph)
+library(networkD3)
+library(htmlwidgets)
+library(ggiraph)
+library(purrr)
+library(broom)
+load('uranium.RData')
+
+```
+
+## Chargement des données et préparation des dataframe
+
+Les données collectées proviennent de différentes sources :
+
+Les données sur les flux entrant et sortant d'uranium proviennent des statistiques douanières. Elles sont données en kg d'uranium pour l'uranium naturel, en masse d'UO2 pour l'uranium enrichi (reconvertie en tU par la suite) et en gramme d'uranium fissile pour les combustibles (reconvertie en tU par la suite, en faisant l'hypothèse d'un enrichissement à 4.2%).
+
+Les données sur la chaîne de transformation de l'uranium sont extraites des rapports d'information d'Orano (conversion et enrichissement) et de Framatome (fabrication du combustible). 
+
+
+Les données disponibles sur l'enrichissement fournies par Orano sont exprimées en UTS (). Pour les convertir en tonnes d'uranium enrichi, on peut utiliser la formule de fractionnement isotopique, en faisant des hypothèses sur le taux d'enrichissement de l'uranium, et sur les queues de production (uranium appauvri).
+
+On peut prendre comme hypothèse de travail un enrichissement à 4.2% et un taux d'uranium appauvri à 0.2%. Ces hypothèses pourront être raffinées, notamment concernant le taux d'enrichissement qui dépend des demandes des acheteurs (par exemple, EDF passe commande d'uranium à des taux allant de 3.7 à 4.5% selon les réacteurs).
+
+Les données sur la consommation des réacteurs EDF sont extraites des rapports Pack ESG annuels.
+
+
+```{r, echo=FALSE}
+
+setwd("C:/Users/nilsm/Documents/data_energies/uranium/douanes")
+
+douanes = read.table("U_all",sep=";")
+labels_pays = read.table("labels_pays",sep=";")
+
+colnames(douanes) = c("Flux", "Mois", "Année", "Code_CPF6", "Code_A129","Code_NC8", "Code_Pays", "Valeur", "Masse", "USUP")
+
+douanes = douanes %>% group_by(Code_Pays,Année,Code_NC8, Flux) %>% summarize(Valeur=sum(Valeur),Masse=sum(Masse),USUP=sum(USUP))
+
+europe_ouest <- c("BE", "DE", "CH", "IT", "ES", "NL", "AT", "PT", "SE")
+europe_est <- c("CZ", "PL", "RO")
+afrique_autres <- c("DZ", "MA", "NG", "TN")
+asie_autres <- c("VN", "PH", "TH", "TW", "KG", "IL")
+grands_consommateurs <- c("US", "FR", "CN", "RU", "KR", "JP")
+producteurs_uranium <- c("AU", "CA", "KZ", "UZ", "NE", "RU", "ZA", "CN")
+
+douanes$Pays = factor(douanes$Code_Pays,levels = c("AT", "AU", "BE", "CA", "CH", "CN", "CZ", "DE", "DZ", "ES", "FR", "GB", "HK", "IL", "IT", "JP", "KG", "KR", "KZ", "MA", "NE", "NG", "NL", "NZ", "PH", "PL", "PT", "PY", "QU", "RO", "RU", "SA", "SE", "TH", "TN", "TW", "US", "UZ", "VN", "ZA"), 
+                                      labels = c("Autriche", "Australie", "Belgique", "Canada", "Suisse", "Chine", "Tchéquie", "Allemagne", "Algérie", "Espagne", "France", "Royaume-Uni", "Hong Kong", "Israël", "Italie", "Japon", "Kirghizistan", "Corée du Sud", "Kazakhstan", "Maroc", "Niger", "Nigeria", "Pays-Bas", "Nouvelle-Zélande", "Philippines", "Pologne", "Portugal", "Paraguay", "Québec", "Roumanie", "Russie", "Arabie saoudite", "Suède", "Thaïlande", "Tunisie", "Taïwan", "États-Unis", "Ouzbékistan", "Viêt Nam", "Afrique du Sud"))
+
+```
+
+
+
+```{r, echo = F}
+
+douanes_long = pivot_longer(douanes,
+    cols = c("Valeur", "Masse", "USUP"),
+    names_to = "Variable",
+    values_to = "Valeur_variable"
+  )
+
+douanes_long = douanes_long %>%
+  mutate(
+    Pays_Out = Code_Pays,
+    source = ifelse(Flux == "I", Pays_Out, "France"),
+    destination = ifelse(Flux == "I", "France", Pays_Out),
+  )
+
+douanes_pivot <- douanes_long %>%
+  mutate(Flux = recode(Flux, "E" = "Export", "I" = "Import")) %>%
+  pivot_wider(
+    names_from = Flux,
+    values_from = Valeur_variable
+  ) %>% 
+  group_by(Année, Pays, Code_NC8, Variable) %>%
+  summarise(
+    Import = sum(Import, na.rm = TRUE),
+    Export = sum(Export, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+
+douanes_pivot$Type_flux = c(0)
+douanes_pivot$Type_flux[douanes_pivot$Import==0]="Export"
+douanes_pivot$Type_flux[douanes_pivot$Export==0]="Import"
+douanes_pivot$Type_flux[douanes_pivot$Type_flux==0]="Flux"
+
+douanes_pivot$Axis1 = c(0)
+douanes_pivot$Axis2 = c(0)
+douanes_pivot$Axis1[douanes_pivot$Type_flux == "Flux"] = douanes_pivot$Pays[douanes_pivot$Type_flux == "Flux"]
+douanes_pivot$Axis2[douanes_pivot$Type_flux == "Flux"] = douanes_pivot$Pays[douanes_pivot$Type_flux == "Flux"]
+douanes_pivot$Axis1[douanes_pivot$Type_flux == "Import"] = douanes_pivot$Pays[douanes_pivot$Type_flux == "Import"]
+douanes_pivot$Axis2[douanes_pivot$Type_flux == "Import"] = "Export"
+douanes_pivot$Axis2[douanes_pivot$Type_flux == "Export"] = douanes_pivot$Pays[douanes_pivot$Type_flux == "Export"]
+douanes_pivot$Axis1[douanes_pivot$Type_flux == "Export"] = "Import"
+
+
+douanes_pivot$solde=douanes_pivot$Import - douanes_pivot$Export
+douanes_pivot$volume=douanes_pivot$Import + douanes_pivot$Export
+
+inventaire_flux = inventaire_new_wider[,1]
+for (i in 3:9) {
+     inventaire_flux = cbind(inventaire_flux,inventaire_new_wider[,i]-inventaire_new_wider[,i-1])
+
+
+
+}
+```
+
+
+```{r, eval = F}
+# Interface utilisateur (UI)
+ui <- fluidPage(
+    titlePanel("Filtrage données uranium"),
+    
+    sidebarLayout(
+        sidebarPanel(
+            sliderInput("Année", "Choisir une période :", 
+                        min = min(douanes_pivot$Année),
+                        max = max(douanes_pivot$Année),
+                        value = c(min(douanes_pivot$Année), max(douanes_pivot$Année)),
+                        step = 1,
+                        sep = ""),
+            
+            selectizeInput("Variable", "Choisir la métrique :", 
+                         choices = c("Valeur" = "Valeur", "Masse" = "Masse", "USUP" = "USUP"),
+                         multiple = TRUE,
+                         selected = "USUP"),
+            
+            selectizeInput("Code_NC8", "Nature de l'uranium :",
+                         choices = c("Naturel" = "28441090", "Enrichi" = "28442035", "Combustible" = "84013000"),
+                         multiple = TRUE,
+                         selected = "28441090"),
+            
+            actionButton("update", "Mettre à jour")
+        ),
+        
+        mainPanel(
+            girafeOutput("barPlot")  # Affichage du graphique interactif
+        )
+    )
+)
+
+server <- function(input, output) {
+  
+    filtered_data <- eventReactive(input$update, {
+        req(input$Année)
+        douanes_pivot %>%
+            filter(
+                Variable %in% input$Variable,  
+                Code_NC8 %in% input$Code_NC8,
+                Année >= input$Année[1],
+                Année <= input$Année[2]
+            )
+    }, ignoreNULL = FALSE)  
+
+    output$barPlot <- renderGirafe({
+        df <- filtered_data()
+        req(df)
+        g <- ggplot(df, aes(
+                tooltip = paste0("Pays : ", Pays, "\n",
+        "Année : ", Année, "\n",
+        "Solde : ", solde, "\n",
+        "Volume : ", volume),
+                x = factor(Année),
+                y = solde, 
+                size = volume, 
+                color = Pays,
+                shape = factor(Code_NC8)
+            )) + 
+            geom_jitter_interactive() +
+            theme_minimal() +
+            labs(x = 'Année', y = paste('Solde (en ',input$Variable,')'))
+        girafe(ggobj = g)
+    })
+}
+
+
+
+shinyApp(ui = ui, server = server)
+```
+
+
+
+### Fonction de séparation isotopique (pour la phase d'enrichissement
+
+```{r, echo = F}
+# Fonction de valeur de séparation
+V <- function(x) {
+  (1 - 2 * x) * log((1 - x) / x)
+}
+
+# Fonction principale : production d'U enrichi à partir des UTS disponibles
+estimer_production_UOX <- function(uts_total, x_p = 0.042, x_t = 0.0025, x_f = 0.00711) {
+  
+  # Calcule la valeur de séparation
+  Vp <- V(x_p)
+  Vt <- V(x_t)
+  Vf <- V(x_f)
+  
+  # Calcul du rapport massique produit/feed
+  Rpf <- (x_p - x_t) / (x_f - x_t)
+  Rtf <- (x_p - x_f) / (x_f - x_t)
+  
+  # SWU nécessaires par tonne de produit
+  swu_par_tU <- Vp + Rtf * Vt - Rpf * Vf
+  
+  # Production d'U enrichi
+  prod_tU <- uts_total / swu_par_tU
+  
+  # Quantité d'uranium naturel nécessaire
+  feed_tU <- prod_tU * Rpf
+  
+  
+  enrichissement = x_p
+  tails = x_t
+  swu_par_tU = swu_par_tU
+  uranium_enrichi = prod_tU
+  uranium_naturel = feed_tU
+  uranium_appauvri = uranium_naturel - uranium_enrichi
+
+  return(list(uranium_enrichi, uranium_naturel, uranium_appauvri))
+  
+}
+
+```
+
+### Graphe en tonnage d'uranium
+
+Un premier regard permet de voir les volumes en jeu dans le marché de l'uranium.
+
+
+```{r Graphe Sankey, echo=FALSE, fig.height=3, fig.width=5, warning=FALSE, paged.print=FALSE}
+# Dictionnaire de conversion
+code_to_forme <- function(code) {
+  dplyr::case_when(
+    code == "28441090" ~ "U_naturel",
+    code == "28442035" ~ "U_enrichi",
+    code == "84013000" ~ "Combustible",
+    TRUE ~ "Autre"
+  )
+}
+
+# Conversions tonnage
+conversion_naturel <- function(masse) masse / 1000
+conversion_enrichi <- function(masse) masse * 0.676 / 1000
+conversion_combustible <- function(masse) masse * 0.88 / 1000
+
+# Pays à surveiller
+pays_russie <- c("RU")
+pays_influence_sino_russe <- c("KZ", "UZ", "CN", "KG", "SA", "DZ", "NG", "MA", "TN", "PH")
+pays_sensibles <- c(pays_russie, pays_influence_sino_russe, "NE", "US")
+
+# Construction d'une variable code pays depuis les labels (si besoin)
+# (Sinon, adapter ce mapping en amont)
+
+# Fusion imports_tonnage/exports_tonnage avec forme
+douanes$forme <- sapply(douanes$Code_NC8, code_to_forme)
+
+# Séparation imports_tonnage/exports_tonnage
+imports_tonnage <- douanes %>% filter(Flux == "I")
+exports_tonnage <- douanes %>% filter(Flux == "E")
+
+# Ajouter colonnes source/target
+imports_tonnage <- imports_tonnage %>%
+  mutate(
+    Source = paste0(Code_Pays, "_import"),
+    Target = paste0("France_", forme)
+  )
+
+exports_tonnage <- exports_tonnage %>%
+  mutate(
+    Source = paste0("France_", forme),
+    Target = paste0(Code_Pays, "_export")
+  )
+
+# Conversion des masses (en tonnes uranium)
+convert_mass <- function(df) {
+  df <- df %>% mutate(value = ifelse(forme == "U_naturel", USUP, Masse))
+  df <- df %>% mutate(
+    value = case_when(
+      forme == "U_naturel" ~ conversion_naturel(value),
+      forme == "U_enrichi" ~ conversion_enrichi(value),
+      forme == "Combustible" ~ conversion_combustible(value),
+      TRUE ~ value
+    )
+  )
+  df %>% group_by(Année, Source, Target, Code_Pays, forme) %>% summarise(Value = sum(value, na.rm = TRUE), .groups = "drop")
+}
+
+imp_clean <- convert_mass(imports_tonnage)
+exp_clean <- convert_mass(exports_tonnage)
+
+# Orano : traitement interne français
+colnames(Orano) = c('Année','Value','Treatment')
+
+
+# Traitements Orano : enrichissement et fabrication sur toutes les années
+flux_conversion <- Orano %>%
+  filter(Treatment == "Conversion (tU)") %>%
+  group_by(Année) %>%
+  summarise(Value = sum(Value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    Source = "France_U_naturel",
+    Target = "France_U_converti"
+  ) %>%
+  select(Année, Source, Target, Value)
+
+
+enrichissement <- Orano %>%
+  filter(Treatment == "Enrichissement (UTS)") %>%
+  group_by(Année) %>%
+  summarise(Value = sum(Value, na.rm = TRUE), .groups = "drop") %>%
+  rowwise() %>%
+  mutate(production = list(estimer_production_UOX(Value))) %>%
+  unnest_wider(production, names_sep = "_") %>%
+  rename(Enrichi = production_1, Appauvri = production_3)
+
+flux_enrichissement <- enrichissement %>%
+  transmute(
+    Année,
+    Source = "France_U_converti",
+    Target = "France_U_enrichi",
+    Value = Enrichi
+  )
+
+flux_appauvri <- enrichissement %>%
+  transmute(
+    Année,
+    Source = "France_U_converti",
+    Target = "France_U_appauvri",
+    Value = Appauvri
+  )
+
+flux_combustible <- Orano %>%
+  filter(Treatment == "Fabrication du combustible (tU)") %>%
+  group_by(Année) %>%
+  summarise(Value = sum(Value, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    Source = "France_U_enrichi",
+    Target = "France_Combustible"
+  ) %>%
+  select(Année, Source, Target, Value)
+
+
+# Consommation
+conso <- data.frame(
+  Année = rep(unique(Orano$Année), each = 2),
+  Source = rep("France_Combustible", 2 * length(unique(Orano$Année))),
+  Target = rep("EDF", 2 * length(unique(Orano$Année))),
+  Value = rep(c(1000, 100), length(unique(Orano$Année)))
+)
+
+traitements <- bind_rows(flux_conversion, flux_enrichissement, flux_appauvri, flux_combustible)
+
+# Concaténation
+df_tonnage <- bind_rows(imp_clean, exp_clean, traitements, conso)
+
+# Identification des flux sensibles
+df_tonnage <- df_tonnage %>%
+  mutate(
+    Pays_flux = gsub("_.*", "", ifelse(grepl("_import$", Source), Source, Target)),
+    GroupeFlux = case_when(
+      Pays_flux %in% pays_russie ~ "russie",
+      Pays_flux %in% pays_influence_sino_russe ~ "influence",
+      Pays_flux == "NE" ~ "niger",
+      Pays_flux == "US" ~ "usa",
+      TRUE ~ "autre"
+    )
+  )
+
+# Ajouter type de mesure
+df_tonnage$Mesure <- "tonnage"
+
+
+```
+
+
+```{r, echo = F}
+
+# Dictionnaire de conversion
+code_to_forme <- function(code) {
+  dplyr::case_when(
+    code == "28441090" ~ "U_naturel",
+    code == "28442035" ~ "U_enrichi",
+    code == "84013000" ~ "Combustible",
+    TRUE ~ "Autre"
+  )
+}
+
+conversion_naturel = function(masse) {
+  return(masse*0.00711*1000)
+}
+
+# Conversion tUF6 (transport de l'uranium enrichi) en tU
+conversion_enrichi = function(masse) {
+  return(masse)
+}
+
+#Conversion tUO2 (transport du combustible) en tU
+conversion_combustible = function(masse) {
+  return(masse)
+}
+
+# Pays à surveiller
+pays_russie <- c("RU")
+pays_influence_sino_russe <- c("KZ", "UZ", "CN", "KG", "SA", "DZ", "NG", "MA", "TN", "PH")
+pays_sensibles <- c(pays_russie, pays_influence_sino_russe, "NE", "US")
+
+# Construction d'une variable code pays depuis les labels (si besoin)
+# (Sinon, adapter ce mapping en amont)
+
+# Fusion imports_grammage/exports_grammage avec forme
+douanes$forme <- sapply(douanes$Code_NC8, code_to_forme)
+
+# Séparation imports_grammage/exports_grammage
+imports_grammage <- douanes %>% filter(Flux == "I")
+exports_grammage <- douanes %>% filter(Flux == "E")
+
+# Ajouter colonnes source/target
+imports_grammage <- imports_grammage %>%
+  mutate(
+    Source = paste0(Code_Pays, "_import"),
+    Target = paste0("France_", forme)
+  )
+
+exports_grammage <- exports_grammage %>%
+  mutate(
+    Source = paste0("France_", forme),
+    Target = paste0(Code_Pays, "_export")
+  )
+
+# Conversion des masses (en tonnes uranium)
+convert_mass <- function(df) {
+  df <- df %>% mutate(value = ifelse(forme == "U_naturel", USUP, USUP))
+  df <- df %>% mutate(
+    value = case_when(
+      forme == "U_naturel" ~ conversion_naturel(value),
+      forme == "U_enrichi" ~ conversion_enrichi(value),
+      forme == "Combustible" ~ conversion_combustible(value),
+      TRUE ~ value
+    )
+  )
+  df %>% group_by(Année, Source, Target, Code_Pays, forme) %>% summarise(Value = sum(value, na.rm = TRUE), .groups = "drop")
+}
+
+imp_clean <- convert_mass(imports_grammage)
+exp_clean <- convert_mass(exports_grammage)
+
+# Orano : traitement interne français
+colnames(Orano) = c('Année','Value','Treatment')
+
+
+# Traitements Orano : enrichissement et fabrication sur toutes les années
+flux_conversion <- Orano %>%
+  filter(Treatment == "Conversion (tU)") %>%
+  group_by(Année) %>%
+  summarise(Value = sum(Value, na.rm = TRUE)*1000000*0.00711, .groups = "drop") %>%
+  mutate(
+    Source = "France_U_naturel",
+    Target = "France_U_converti"
+  ) %>%
+  select(Année, Source, Target, Value)
+
+
+enrichissement <- Orano %>%
+  filter(Treatment == "Enrichissement (UTS)") %>%
+  group_by(Année) %>%
+  summarise(Value = sum(Value, na.rm = TRUE), .groups = "drop") %>%
+  rowwise() %>%
+  mutate(production = list(estimer_production_UOX(Value))) %>%
+  unnest_wider(production, names_sep = "_") %>%
+  rename(Enrichi = production_1, Appauvri = production_3)
+
+flux_enrichissement <- enrichissement %>%
+  transmute(
+    Année,
+    Source = "France_U_converti",
+    Target = "France_U_enrichi",
+    Value = Enrichi*0.042*1000000
+  )
+
+flux_appauvri <- enrichissement %>%
+  transmute(
+    Année,
+    Source = "France_U_converti",
+    Target = "France_U_appauvri",
+    Value = Appauvri*0.0025*1000000
+  )
+
+flux_combustible <- Orano %>%
+  filter(Treatment == "Fabrication du combustible (tU)") %>%
+  group_by(Année) %>%
+  summarise(Value = sum(Value, na.rm = TRUE)*0.042*1000000, .groups = "drop") %>%
+  mutate(
+    Source = "France_U_enrichi",
+    Target = "France_Combustible"
+  ) %>%
+  select(Année, Source, Target, Value)
+
+
+# Consommation
+conso <- data.frame(
+  Année = rep(unique(Orano$Année), each = 2),
+  Source = rep("France_Combustible", 2 * length(unique(Orano$Année))),
+  Target = rep("EDF", 2 * length(unique(Orano$Année))),
+  Value = rep(c(1000*1000000*0.042, 100*1000000*0.042), length(unique(Orano$Année)))
+)
+
+traitements <- bind_rows(flux_conversion, flux_enrichissement, flux_appauvri, flux_combustible)
+
+# Concaténation
+df_grammage <- bind_rows(imp_clean, exp_clean, traitements, conso)
+
+# Identification des flux sensibles
+df_grammage <- df_grammage %>%
+  mutate(
+    Pays_flux = gsub("_.*", "", ifelse(grepl("_import$", Source), Source, Target)),
+    GroupeFlux = case_when(
+      Pays_flux %in% pays_russie ~ "russie",
+      Pays_flux %in% pays_influence_sino_russe ~ "influence",
+      Pays_flux == "NE" ~ "niger",
+      Pays_flux == "US" ~ "usa",
+      TRUE ~ "autre"
+    )
+  )
+
+# Ajouter type de mesure
+df_grammage$Mesure <- "grammage"
+
+
+```
+
+```{r}
+save(df_tonnage,df_grammage,imports_tonnage,imports_grammage,exports_tonnage,exports_grammage, file = 'donnees_sankey.RData')
+```
+
+
+
+```{r}
+load(file = 'donnees_sankey.RData')
+
+ui <- fluidPage(
+    titlePanel("Filtrage données uranium"),
+
+    fluidRow(
+        column(
+            width = 12,
+            sliderInput("Année", "Choisir une période :", 
+                        min = min(douanes_pivot$Année),
+                        max = max(douanes_pivot$Année),
+                        value = c(min(douanes_pivot$Année), max(douanes_pivot$Année)),
+                        step = 1,
+                        sep = "")
+        )
+    ),
+
+    sidebarLayout(
+        sidebarPanel(
+            selectizeInput("Variable", "Choisir la métrique :", 
+                           choices = c("Tonnes d'uranium" = "_tonnage","Grammes d'uranium fissile" = "_grammage"),
+                           multiple = F,
+                           selected = "_tonnage"),
+            
+            selectizeInput("Forme", "Nature de l'uranium :",
+                           choices = c("Naturel" = "U_naturel", "Enrichi" = "U_enrichi", "Combustible" = "Combustible"),
+                           multiple = TRUE,
+                           selected = "U_naturel"),
+            
+            actionButton("update", "Mettre à jour")
+        ),
+        
+        mainPanel(
+            girafeOutput("barPlot")
+        )
+    )
+)
+
+  
+  
+server <- function(input, output) {
+  
+    filtered_data <- eventReactive(input$update, {
+        req(input$Année)
+        
+        df <- get(paste0('df',input$Variable)) # récupère df_tonnage ou df_grammage
+        
+        imp = get(paste0('imports',input$Variable)) %>% select(-any_of(c("Masse", "USUP", "Code_NC8", "Pays", "Flux")))
+        exp = get(paste0('exports',input$Variable)) %>% select(-any_of(c("Masse", "USUP", "Code_NC8", "Pays", "Flux")))
+        
+        df = left_join(df,rbind(imp,exp)) %>% rename(., "Value_USD" = "Valeur")
+        
+        df = df %>%
+            filter(
+                forme %in% input$Forme,
+                Année >= input$Année[1],
+                Année <= input$Année[2],
+                Value_USD > 1000000
+            )
+        
+          df_residus <- df %>%
+            group_by(Année, forme) %>%
+            filter(n() >= 2) %>%
+            nest() %>%
+            mutate(
+              model = map(data, ~ lm(Value_USD ~ Value, data = .x)),
+              augmented = map2(model, data, ~ broom::augment(.x, data = .y))
+            ) %>%
+            select(Année, augmented) %>%
+            unnest(augmented) %>%
+            ungroup() %>%
+            rename(residu_prix = .resid)
+  
+  return(df_residus)
+          
+          return(df_residus)
+        
+    }, ignoreNULL = FALSE)
+    
+    output$barPlot <- renderGirafe({
+        df <- filtered_data()
+        req(df)
+        g <- ggplot(df, aes(
+                tooltip = paste0("Pays : ", Code_Pays, "\n",
+                                 "Année : ", Année, "\n",
+                                 "Valeur Monétaire : ", Value_USD, "\n",
+                                 "Valeur :", Value),
+                x = factor(Année),
+                y = Value,
+                size = Value,
+                color = residu_prix,
+                shape = forme
+            )) +
+            geom_jitter_interactive(width = 0.2, height = 0) +
+            scale_color_gradient2(low = "blue", mid = "gold", high = "red", midpoint = 0) +
+            theme_minimal() +
+            labs(
+                x = 'Année',
+                y = names(which(c("df_tonnage", "df_grammage") == input$Variable)),
+                color = "Résidu de prix"
+            )
+        girafe(ggobj = g)
+    })
+}
+
+
+shinyApp(ui = ui, server = server)
+```
+
+
+```{r, echo = F}
+library(shiny)
+library(networkD3)
+library(dplyr)
+
+load("donnees_sankey.RData")  # contient df_tonnage
+
+ui <- fluidPage(
+  titlePanel("Flux nucléaires : Sankey stratégique"),
+  fluidRow(column(
+      width = 12,
+      sliderInput("annee", "Année :", 
+                  min = min(df_tonnage$Année), 
+                  max = max(df_tonnage$Année), 
+                  value = 2023, 
+                  step = 1,
+                  sep = ""))
+  ),
+  fluidRow(
+    column(
+      width = 12,
+      sankeyNetworkOutput("sankey", height = "800px")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  output$sankey <- renderSankeyNetwork({
+    Yr <- input$annee
+    flows = df_tonnage %>% filter(Année == Yr) %>% select(Source, Target, Value)
+    
+    nodes <- data.frame(name = unique(c(flows$Source, flows$Target)))
+    
+    flows$source <- match(flows$Source, nodes$name) - 1
+    flows$target <- match(flows$Target, nodes$name) - 1
+    
+    # Colorier les flows    
+    
+    influence_countries <- c("UZ", "KZ", "KG", "RU", "CN")
+    
+    # Initialisation des groupes dans flows
+    flows$group <- "autre"
+    
+    # Assignation des groupes pour les flux liés à la Russie
+    flows$group[grepl("RU", flows$Source) | grepl("RU", flows$Target)] <- "russie"
+    
+    # Assignation des groupes pour les flux sous influence sino-russe (hors Russie déjà prise en compte)
+    flows$group[
+      grepl(paste(influence_countries[influence_countries != "RU"], collapse = "|"), flows$Source) |
+      grepl(paste(influence_countries[influence_countries != "RU"], collapse = "|"), flows$Target)
+    ] <- "influence"
+    
+    # Assignation des groupes pour les flux liés au Niger
+    flows$group[grepl("NE", flows$Source) | grepl("NE", flows$Target)] <- "niger"
+    
+    
+    # Colorier les nodes 
+    
+    nodes$group <- "autre"
+    
+    nodes$group[nodes$name == "France_U_naturel"] <- "claire"
+    nodes$group[nodes$name == "France_U_converti"] <- "bleu1"
+    nodes$group[nodes$name == "France_U_enrichi"] <- "bleu2"
+    nodes$group[nodes$name == "France_Combustible"] <- "bleu3"
+    nodes$group[nodes$name == "EDF"] <- "marine"
+    
+        
+    # Dictionnaire des noms de pays → codes ISO
+    noms_pays <- c("Autriche", "Australie", "Belgique", "Canada", "Suisse", "Chine", "Tchéquie", "Allemagne", "Algérie", "Espagne", "France", "Royaume-Uni", "Hong Kong", "Israël", "Italie", "Japon", "Kirghizistan", "Corée du Sud", "Kazakhstan", "Maroc", "Niger", "Nigeria", "Pays-Bas", "Nouvelle-Zélande", "Philippines", "Pologne", "Portugal", "Paraguay", "Québec", "Roumanie", "Russie", "Arabie saoudite", "Suède", "Thaïlande", "Tunisie", "Taïwan", "États-Unis", "Ouzbékistan", "Viêt Nam", "Afrique du Sud")
+    codes_iso <- c("AT", "AU", "BE", "CA", "CH", "CN", "CZ", "DE", "DZ", "ES", "FR", "GB", "HK", "IL", "IT", "JP", "KG", "KR", "KZ", "MA", "NE", "NG", "NL", "NZ", "PH", "PL", "PT", "PY", "QU", "RO", "RU", "SA", "SE", "TH", "TN", "TW", "US", "UZ", "VN", "ZA")
+    dict_pays <- setNames(noms_pays,codes_iso)
+    
+    # Initialisation des labels
+    nodes$label <- ""
+    
+    # Détection des import/export
+    nodes$is_import <- grepl("_import$", nodes$name)
+    nodes$is_export <- grepl("_export$", nodes$name)
+    
+    # Extraire le nom du pays depuis "Nom_import/export"
+    nodes$nom_pays <- gsub("_(import|export)$", "", nodes$name)
+    
+    # Associer les labels pour les nœuds d'import/export
+    nodes$label[nodes$is_import | nodes$is_export] <- dict_pays[nodes$nom_pays[nodes$is_import | nodes$is_export]]
+    
+    # Labels explicites pour les étapes internes
+    nodes$label[nodes$name == "France_U_naturel"]     <- "Naturel"
+    nodes$label[nodes$name == "France_U_converti"]    <- "Converti"
+    nodes$label[nodes$name == "France_U_enrichi"]     <- "Enrichi"
+    nodes$label[nodes$name == "France_Combustible"]   <- "Combustible"
+    nodes$label[nodes$name == "EDF"]                  <- "Consommation"
+    nodes$label[nodes$name == "France_U_appauvri"]                  <- "Appauvri"
+   
+                    
+    # Palette des couleurs    
+            
+    colourScale <- JS("d3.scaleOrdinal()
+    .domain(['claire', 'bleu1', 'bleu2', 'bleu3', 'marine', 'autre', 
+             'russie', 'influence', 'niger'])
+    .range(['#cce6ff', '#66b3ff', '#3385ff', '#0059b3', '#002147', '#cccccc',
+            '#d73027', '#fc8d59', '#fee08b'])")
+    
+    links <- flows[, c("source", "target", "Value", "group")]
+    
+    # Sankey Network    
+        
+    sankeyNetwork(
+      Links = links,
+      Nodes = nodes,
+      Source = "source",
+      Target = "target",
+      Value = "Value",
+      NodeID = "label",
+      NodeGroup = "group",
+      LinkGroup = "group",      # <-- active la coloration des flux
+      colourScale = colourScale,
+      fontSize = 10,
+      nodeWidth = 30,
+      nodePadding = 20,
+      width = 1400,
+      height = 400
+    )
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+```
+
+
+
+
+
+### Graphe en gramme d'uranium fissile
+
+Néanmoins, il peut être intéressant d'exprimer les flux en termes de grammes d'uranium fissile, c'est-à-dire concrètement en termes d'énergie potentiellement exploitable.
+
+
+```{r, echo = F}
+library(shiny)
+library(networkD3)
+library(dplyr)
+
+load("donnees_sankey.RData")  # contient df_tonnage
+
+ui <- fluidPage(
+  titlePanel("Flux nucléaires : Sankey stratégique"),
+  fluidRow(column(
+      width = 12,
+      sliderInput("annee", "Année :", 
+                  min = min(df_grammage$Année), 
+                  max = max(df_grammage$Année), 
+                  value = 2023, 
+                  step = 1,
+                  sep = ""))
+  ),
+  fluidRow(
+    column(
+      width = 12,
+      sankeyNetworkOutput("sankey", height = "800px")
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  output$sankey <- renderSankeyNetwork({
+    Yr <- input$annee
+    flows = df_grammage %>% filter(Année == Yr) %>% select(Source, Target, Value)
+    
+    nodes <- data.frame(name = unique(c(flows$Source, flows$Target)))
+    
+    flows$source <- match(flows$Source, nodes$name) - 1
+    flows$target <- match(flows$Target, nodes$name) - 1
+    
+    # Colorier les flows    
+    
+    influence_countries <- c("UZ", "KZ", "KG", "RU", "CN")
+    
+    # Initialisation des groupes dans flows
+    flows$group <- "autre"
+    
+    # Assignation des groupes pour les flux liés à la Russie
+    flows$group[grepl("RU", flows$Source) | grepl("RU", flows$Target)] <- "russie"
+    
+    # Assignation des groupes pour les flux sous influence sino-russe (hors Russie déjà prise en compte)
+    flows$group[
+      grepl(paste(influence_countries[influence_countries != "RU"], collapse = "|"), flows$Source) |
+      grepl(paste(influence_countries[influence_countries != "RU"], collapse = "|"), flows$Target)
+    ] <- "influence"
+    
+    # Assignation des groupes pour les flux liés au Niger
+    flows$group[grepl("NE", flows$Source) | grepl("NE", flows$Target)] <- "niger"
+    
+    
+    # Colorier les nodes 
+    
+    nodes$group <- "autre"
+    
+    nodes$group[nodes$name == "France_U_naturel"] <- "claire"
+    nodes$group[nodes$name == "France_U_converti"] <- "bleu1"
+    nodes$group[nodes$name == "France_U_enrichi"] <- "bleu2"
+    nodes$group[nodes$name == "France_Combustible"] <- "bleu3"
+    nodes$group[nodes$name == "EDF"] <- "marine"
+    
+        
+    # Dictionnaire des noms de pays → codes ISO
+    noms_pays <- c("Autriche", "Australie", "Belgique", "Canada", "Suisse", "Chine", "Tchéquie", "Allemagne", "Algérie", "Espagne", "France", "Royaume-Uni", "Hong Kong", "Israël", "Italie", "Japon", "Kirghizistan", "Corée du Sud", "Kazakhstan", "Maroc", "Niger", "Nigeria", "Pays-Bas", "Nouvelle-Zélande", "Philippines", "Pologne", "Portugal", "Paraguay", "Québec", "Roumanie", "Russie", "Arabie saoudite", "Suède", "Thaïlande", "Tunisie", "Taïwan", "États-Unis", "Ouzbékistan", "Viêt Nam", "Afrique du Sud")
+    codes_iso <- c("AT", "AU", "BE", "CA", "CH", "CN", "CZ", "DE", "DZ", "ES", "FR", "GB", "HK", "IL", "IT", "JP", "KG", "KR", "KZ", "MA", "NE", "NG", "NL", "NZ", "PH", "PL", "PT", "PY", "QU", "RO", "RU", "SA", "SE", "TH", "TN", "TW", "US", "UZ", "VN", "ZA")
+    dict_pays <- setNames(noms_pays,codes_iso)
+    
+    # Initialisation des labels
+    nodes$label <- ""
+    
+    # Détection des import/export
+    nodes$is_import <- grepl("_import$", nodes$name)
+    nodes$is_export <- grepl("_export$", nodes$name)
+    
+    # Extraire le nom du pays depuis "Nom_import/export"
+    nodes$nom_pays <- gsub("_(import|export)$", "", nodes$name)
+    
+    # Associer les labels pour les nœuds d'import/export
+    nodes$label[nodes$is_import | nodes$is_export] <- dict_pays[nodes$nom_pays[nodes$is_import | nodes$is_export]]
+    
+    # Labels explicites pour les étapes internes
+    nodes$label[nodes$name == "France_U_naturel"]     <- "Naturel"
+    nodes$label[nodes$name == "France_U_converti"]    <- "Converti"
+    nodes$label[nodes$name == "France_U_enrichi"]     <- "Enrichi"
+    nodes$label[nodes$name == "France_Combustible"]   <- "Combustible"
+    nodes$label[nodes$name == "EDF"]                  <- "Consommation"
+    nodes$label[nodes$name == "France_U_appauvri"]                  <- "Appauvri"
+   
+                    
+    # Palette des couleurs    
+            
+    colourScale <- JS("d3.scaleOrdinal()
+    .domain(['claire', 'bleu1', 'bleu2', 'bleu3', 'marine', 'autre', 
+             'russie', 'influence', 'niger'])
+    .range(['#cce6ff', '#66b3ff', '#3385ff', '#0059b3', '#002147', '#cccccc',
+            '#d73027', '#fc8d59', '#fee08b'])")
+    
+    links <- flows[, c("source", "target", "Value", "group")]
+    
+    # Sankey Network    
+        
+    sankey <- sankeyNetwork(
+      Links = links,
+      Nodes = nodes,
+      Source = "source",
+      Target = "target",
+      Value = "Value",
+      NodeID = "label",
+      NodeGroup = "group",
+      LinkGroup = "group",
+      colourScale = colourScale,
+      fontSize = 10,
+      nodeWidth = 10,
+      nodePadding = 20,
+      width = "100%",
+      height = 400,
+      sinksRight = FALSE
+    )
+    
+    onRender(sankey, '
+      function(el) {
+        // Recherche du nœud "Appauvri" et "Enrichi"
+        var nodes = this.sankey.nodes();
+        var enrichi = nodes.find(n => n.name === "Appauvri");
+        var converti = nodes.find(n => n.name === "Enrichi");
+        if (enrichi && converti) {
+          enrichi.x = converti.x;  // même position horizontale
+        }
+        this.sankey.layout(32);   // recalcul du layout
+      }
+    ')
+  })
+}
+
+shinyApp(ui = ui, server = server)
+
+```
+
+
+Plusieurs enseignements peuvent être tirés de ce panel. 
+
+Volumes mis en jeu
+
+Dépendance stratégique : 
+- Russie la question est compliquée. Flux importés/exportés : difficile à dire ce qui passe par notre propre production.
+
+
+Faire un graphe en regardant si on peut se passer de la Russie.
