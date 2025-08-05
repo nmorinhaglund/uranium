@@ -1,0 +1,9 @@
+{
+  "name": "R Devcontainer",
+  "image": "rocker/verse",
+  "customizations": {
+    "vscode": {
+      "extensions": ["Ikuyadeu.r", "REditorSupport.r-lsp"]
+    }
+  }
+}
