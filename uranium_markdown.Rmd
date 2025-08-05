@@ -8,20 +8,24 @@ runtime: shiny
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE)
-setwd("C:/Users/nilsm/Documents/data_energies/uranium")
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(stringr)
-library(rsconnect)
-library(shiny)
-library(ggiraph)
-library(networkD3)
-library(htmlwidgets)
-library(ggiraph)
-library(purrr)
-library(broom)
-load('uranium.RData')
+
+# 1. Packages
+packages <- c(
+  "ggplot2", "dplyr", "tidyr", "stringr", "rsconnect", "shiny", 
+  "ggiraph", "networkD3", "htmlwidgets", "purrr", "broom"
+)
+
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg)
+  }
+}
+invisible(lapply(packages, install_if_missing))
+lapply(packages, library, character.only = TRUE)
+
+# 2. Chargement depuis GitHub
+load(url("https://raw.githubusercontent.com/nmorinhaglund/uranium/main/uranium.RData"))
+load(url("https://raw.githubusercontent.com/nmorinhaglund/uranium/main/donnees_sankey.RData"))
 
 ```
 
@@ -43,7 +47,11 @@ Les données sur la consommation des réacteurs EDF sont extraites des rapports 
 
 ```{r, echo=FALSE}
 
-setwd("C:/Users/nilsm/Documents/data_energies/uranium/douanes")
+if (all(exists("douanes"), exists("douanes_pivot"), exists("douanes_long"))) {
+  message("Les données des douanes ont été correctement importées.")
+} 
+
+else {
 
 douanes = read.table("U_all",sep=";")
 labels_pays = read.table("labels_pays",sep=";")
@@ -61,12 +69,6 @@ producteurs_uranium <- c("AU", "CA", "KZ", "UZ", "NE", "RU", "ZA", "CN")
 
 douanes$Pays = factor(douanes$Code_Pays,levels = c("AT", "AU", "BE", "CA", "CH", "CN", "CZ", "DE", "DZ", "ES", "FR", "GB", "HK", "IL", "IT", "JP", "KG", "KR", "KZ", "MA", "NE", "NG", "NL", "NZ", "PH", "PL", "PT", "PY", "QU", "RO", "RU", "SA", "SE", "TH", "TN", "TW", "US", "UZ", "VN", "ZA"), 
                                       labels = c("Autriche", "Australie", "Belgique", "Canada", "Suisse", "Chine", "Tchéquie", "Allemagne", "Algérie", "Espagne", "France", "Royaume-Uni", "Hong Kong", "Israël", "Italie", "Japon", "Kirghizistan", "Corée du Sud", "Kazakhstan", "Maroc", "Niger", "Nigeria", "Pays-Bas", "Nouvelle-Zélande", "Philippines", "Pologne", "Portugal", "Paraguay", "Québec", "Roumanie", "Russie", "Arabie saoudite", "Suède", "Thaïlande", "Tunisie", "Taïwan", "États-Unis", "Ouzbékistan", "Viêt Nam", "Afrique du Sud"))
-
-```
-
-
-
-```{r, echo = F}
 
 douanes_long = pivot_longer(douanes,
     cols = c("Valeur", "Masse", "USUP"),
@@ -116,8 +118,7 @@ douanes_pivot$volume=douanes_pivot$Import + douanes_pivot$Export
 inventaire_flux = inventaire_new_wider[,1]
 for (i in 3:9) {
      inventaire_flux = cbind(inventaire_flux,inventaire_new_wider[,i]-inventaire_new_wider[,i-1])
-
-
+}
 
 }
 ```
@@ -954,3 +955,4 @@ Dépendance stratégique :
 
 
 Faire un graphe en regardant si on peut se passer de la Russie.
+
